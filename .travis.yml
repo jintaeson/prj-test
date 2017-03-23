@@ -1,0 +1,24 @@
+language: java
+
+sudo: required
+
+env:
+  - BUILD_ARCH=x86_64
+  - BUILD_ARCH=i586
+  - BUILD_ARCH=armv7l
+  - BUILD_ARCH=aarch64
+
+before_script:
+  - echo "deb http://download.tizen.org/tools/latest-release/Ubuntu_12.04/ /" | sudo tee -a /etc/apt/sources.list
+  - sudo apt-get update -qq
+  - sudo apt-get install gbs -y --force-yes
+
+script:
+  - "gbs -c .travis-gbs.conf build -A $BUILD_ARCH"
+
+cache:
+  directories:
+    - $HOME/GBS-ROOT/local/cache
+
+
+
