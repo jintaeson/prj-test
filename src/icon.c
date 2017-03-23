@@ -1,0 +1,596 @@
+/*
+ * Copyright 2016  Samsung Electronics Co., Ltd
+ *
+ * Licensed under the Flora License, Version 1.1 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://floralicense.org/license/
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include <Eina.h>
+#include <app_preference.h>
+
+#include "common.h"
+#include "box.h"
+#include "icon.h"
+#include "list.h"
+#include "main.h"
+#include "indicator_gui.h"
+#include "util.h"
+#include "log.h"
+#include "more_notify.h"
+
+#define PRIVATE_DATA_KEY_ICON_B_ANI "p_i_ba"
+
+#define ON_TIMER_ICON_ANIMATION_FRAME_TIME 0.3
+#define UPLOAD_ICON_ANIMATION_SIGNAL 	"indicator.ani.uploading.%d"
+#define DOWNLOAD_ICON_ANIMATION_SIGNAL "indicator.ani.downloading.%d"
+
+#define PORT_MORE_NOTI_ICON 1
+
+static unsigned int update_icon_flag = 1;	/* For battery problem */
+
+static void _reset_on_timer_icon_animation(icon_s *icon)
+{
+	ret_if(!icon);
+
+	if (icon->p_animation_timer) {
+		ecore_timer_del(icon->p_animation_timer);
+		icon->p_animation_timer = NULL;
+	}
+	icon->animation_in_progress = EINA_FALSE;
+	icon->last_animation_timestamp = ecore_time_unix_get();
+	icon->signal_to_emit_prefix[0] = '\0';
+	icon->animation_state = UD_ICON_ANI_STATE_0;
+}
+
+
+static Eina_Bool _animate_on_timer_cb(void *data)
+{
+	icon_s *icon = NULL;
+
+	retv_if(!data, ECORE_CALLBACK_CANCEL);
+
+	icon = (icon_s *)data;
+
+	if (icon->animation_in_progress == EINA_FALSE) {
+		icon->p_animation_timer = NULL;
+		return ECORE_CALLBACK_CANCEL;
+	}
+
+	if ((ecore_time_unix_get() - icon->last_animation_timestamp) < ON_TIMER_ICON_ANIMATION_FRAME_TIME)
+		return ECORE_CALLBACK_RENEW;
+
+	Evas_Object *img_edje = elm_layout_edje_get(icon->img_obj.obj);
+	retv_if(!img_edje, ECORE_CALLBACK_CANCEL);
+
+	char signal_to_emit[SIGNAL_SIZE] = {'\0',};
+
+	snprintf(signal_to_emit, SIGNAL_SIZE, icon->signal_to_emit_prefix, icon->animation_state);
+
+	edje_object_signal_emit(img_edje, signal_to_emit, "prog");
+
+	if (icon->animation_state == UD_ICON_ANI_STATE_MAX) {
+		icon->animation_state = UD_ICON_ANI_STATE_0;
+	} else
+		icon->animation_state++;
+
+	icon->last_animation_timestamp = ecore_time_unix_get();
+
+	return ECORE_CALLBACK_RENEW;
+}
+
+
+static const char *_icon_ani_type_set_send_signal(icon_s *icon, Icon_Ani_Type type)
+{
+	retv_if(!icon, NULL);
+
+	const char *BLINK_SIGNAL = "icon,state,blink";
+	const char *ROTATE_SIGNAL = "icon,state,rotate";
+	const char *METRONOME_SIGNAL = "icon,state,metronome";
+	const char *DEFAULT = "icon,state,default";
+	const char *send_signal = DEFAULT;
+
+	switch (type) {
+	case ICON_ANI_BLINK:
+		send_signal = BLINK_SIGNAL;
+		break;
+	case ICON_ANI_ROTATE:
+		send_signal = ROTATE_SIGNAL;
+		break;
+	case ICON_ANI_METRONOME:
+		send_signal = METRONOME_SIGNAL;
+		break;
+	case ICON_ANI_DOWNLOADING:
+	case ICON_ANI_UPLOADING:
+		/* If this icon is already animated during download/upload we don't have to set timer again */
+		if (icon->animation_in_progress == EINA_FALSE) {
+			_reset_on_timer_icon_animation(icon);
+			send_signal = "dummy.signal";
+
+			if (type == ICON_ANI_DOWNLOADING)
+				strncpy(icon->signal_to_emit_prefix, DOWNLOAD_ICON_ANIMATION_SIGNAL, sizeof(DOWNLOAD_ICON_ANIMATION_SIGNAL));
+
+			if (type == ICON_ANI_UPLOADING)
+				strncpy(icon->signal_to_emit_prefix, UPLOAD_ICON_ANIMATION_SIGNAL, sizeof(UPLOAD_ICON_ANIMATION_SIGNAL));
+
+			icon->animation_in_progress = EINA_TRUE;
+			icon->p_animation_timer = ecore_timer_add(ON_TIMER_ICON_ANIMATION_FRAME_TIME, _animate_on_timer_cb, icon);
+		}
+		break;
+	default:
+		break;
+	}
+
+	return send_signal;
+}
+
+
+void icon_ani_set(icon_s *icon, Icon_Ani_Type type)
+{
+	Evas_Object *img_edje = NULL;
+	const char *send_signal = NULL;
+
+	ret_if(!icon);
+
+	icon->ani = type;
+
+	if (!icon->obj_exist) return;
+
+	send_signal = _icon_ani_type_set_send_signal(icon, type);
+	ret_if(!send_signal);
+
+	switch (icon->type) {
+	case INDICATOR_IMG_ICON:
+		img_edje = elm_layout_edje_get(icon->img_obj.obj);
+		edje_object_signal_emit(img_edje, send_signal, "elm.swallow.icon");
+		break;
+	case INDICATOR_TXT_ICON:
+		break;
+	case INDICATOR_TXT_WITH_IMG_ICON:
+		break;
+	case INDICATOR_DIGIT_ICON:
+		img_edje = elm_layout_edje_get(icon->img_obj.obj);
+		edje_object_signal_emit(img_edje, send_signal, "elm.swallow.icon");
+		break;
+	default:
+		break;
+	}
+}
+
+
+static void _fixed_icon_layout_file_set(icon_s *icon, Evas_Object *ly)
+{
+	ret_if(!icon);
+	ret_if(!ly);
+
+	if (icon->type == INDICATOR_DIGIT_ICON && icon->digit_area == DIGIT_DOZENS)
+		elm_layout_file_set(ly, util_get_res_file_path(ICON_THEME_FILE), "elm/indicator/icon/dozen_digit");
+	else
+		elm_layout_file_set(ly, util_get_res_file_path(ICON_THEME_FILE), "elm/indicator/icon/base");
+}
+
+
+static void _noti_ani_icon_layout_file_set(int noti_is_ani, Evas_Object *ly)
+{
+	ret_if(!ly);
+
+	if (noti_is_ani) {
+		evas_object_data_set(ly, PRIVATE_DATA_KEY_ICON_B_ANI, (void *) 1);
+		elm_layout_file_set(ly, util_get_res_file_path(ICON_NONFIXED_THEME_ANI_FILE), "elm/indicator/icon/base");
+	} else
+		elm_layout_file_set(ly, util_get_res_file_path(ICON_NONFIXED_THEME_FILE), "elm/indicator/icon/base");
+}
+
+
+static Evas_Object *_img_icon_add(win_info *win, icon_s *icon)
+{
+	char path[PATH_MAX];
+	Evas_Object *evas_icon;
+	Evas_Object *ly;
+	const char *imgpath = NULL;
+	int noti_is_ani = 0;
+	int b_ani = 0;
+
+	retv_if(!win, NULL);
+	retv_if(!icon, NULL);
+
+	imgpath = (char *) icon->img_obj.data;
+
+	_reset_on_timer_icon_animation(icon);
+
+	if (icon->img_obj.width <= 0)
+		icon->img_obj.width = DEFAULT_ICON_WIDTH;
+
+	if (icon->img_obj.height <= 0)
+		icon->img_obj.height = DEFAULT_ICON_HEIGHT;
+
+	memset(path, 0x00, sizeof(path));
+
+	ly = elm_layout_add(win->layout);
+	retv_if(!ly, NULL);
+
+	if (icon->area == INDICATOR_ICON_AREA_FIXED)
+		_fixed_icon_layout_file_set(icon, ly);
+	else {
+		noti_is_ani = util_check_noti_ani(imgpath);
+		_noti_ani_icon_layout_file_set(noti_is_ani, ly);
+	}
+
+	evas_icon = elm_image_add(ly);
+	retv_if(!evas_icon, NULL);
+
+	b_ani = (int) evas_object_data_get(ly, PRIVATE_DATA_KEY_ICON_B_ANI);
+	if (!b_ani) {
+		if (strncmp(imgpath, "/", 1) != 0)
+			snprintf(path, sizeof(path), "%s/%s", util_get_icon_dir(), imgpath);
+		else
+			strncpy(path, imgpath, sizeof(path)-1);
+
+		if (!ecore_file_exists(path))
+			_E("icon file does not exist : %s", path);
+
+		elm_image_file_set(evas_icon, path, NULL);
+	}
+
+	evas_object_size_hint_min_set(evas_icon, ELM_SCALE_SIZE(icon->img_obj.width), ELM_SCALE_SIZE(icon->img_obj.height));
+	elm_object_part_content_set(ly, "elm.swallow.icon", evas_icon);
+
+	evas_object_data_set(ly, DATA_KEY_IMG_ICON, evas_icon);
+	evas_object_size_hint_min_set(ly, ELM_SCALE_SIZE(icon->img_obj.width), ELM_SCALE_SIZE(icon->img_obj.height));
+	evas_object_hide(ly);
+
+	return ly;
+}
+
+
+Eina_Bool icon_add(win_info *win, icon_s *icon)
+{
+	retv_if(!icon, EINA_FALSE);
+
+	switch (icon->type) {
+	case INDICATOR_TXT_ICON:
+		break;
+	case INDICATOR_IMG_ICON:
+		icon->img_obj.obj = _img_icon_add(win, icon);
+		break;
+	case INDICATOR_TXT_WITH_IMG_ICON:
+		break;
+	case INDICATOR_DIGIT_ICON:
+		icon->img_obj.obj = _img_icon_add(win, icon);
+		break;
+	default:
+		_E("Icon type check error!");
+		return EINA_FALSE;
+	}
+	icon->obj_exist = EINA_TRUE;
+
+	return EINA_TRUE;
+}
+
+
+Eina_Bool icon_del(icon_s *icon)
+{
+	Evas_Object *icon_obj;
+	retvm_if(icon == NULL, EINA_FALSE, "Invalid parameter!");
+
+	_reset_on_timer_icon_animation(icon);
+
+	if (icon->obj_exist != EINA_FALSE) {
+		if (icon->img_obj.obj) {
+			icon_obj = evas_object_data_get(icon->img_obj.obj, DATA_KEY_IMG_ICON);
+			evas_object_del(icon_obj);
+			evas_object_del(icon->img_obj.obj);
+			icon->img_obj.obj = NULL;
+		}
+	}
+	return EINA_TRUE;
+}
+
+
+static int _icon_update(icon_s *icon)
+{
+	struct appdata *ad = NULL;
+	Evas_Object *img_eo;
+	char buf[PATH_MAX];
+
+	retvm_if(icon == NULL || icon->ad == NULL, FAIL, "Invalid parameter!");
+	ad = icon->ad;
+
+	memset(buf, 0x00, sizeof(buf));
+
+	if (icon->type == INDICATOR_IMG_ICON || icon->type == INDICATOR_TXT_WITH_IMG_ICON || icon->type == INDICATOR_DIGIT_ICON) {
+		if (icon->area == INDICATOR_ICON_AREA_FIXED) {
+			if (icon->type == INDICATOR_DIGIT_ICON && icon->digit_area == DIGIT_DOZENS)
+				elm_layout_file_set(icon->img_obj.obj, util_get_res_file_path(ICON_THEME_FILE), "elm/indicator/icon/dozen_digit");
+			else
+				elm_layout_file_set(icon->img_obj.obj, util_get_res_file_path(ICON_THEME_FILE), "elm/indicator/icon/base");
+
+		} else {
+			if (util_check_noti_ani(icon->img_obj.data))
+				elm_layout_file_set(icon->img_obj.obj, util_get_res_file_path(ICON_NONFIXED_THEME_ANI_FILE), "elm/indicator/icon/base");
+			else
+				elm_layout_file_set(icon->img_obj.obj, util_get_res_file_path(ICON_NONFIXED_THEME_FILE), "elm/indicator/icon/base");
+		}
+
+		img_eo = evas_object_data_get(icon->img_obj.obj, DATA_KEY_IMG_ICON);
+
+		util_start_noti_ani(icon);
+
+		/* Check absolute path */
+		retvm_if(icon->img_obj.data == NULL, FAIL, "Invalid parameter!");
+
+		if (strncmp(icon->img_obj.data, "/", 1) != 0) {
+			snprintf(buf, sizeof(buf), "%s/%s", util_get_icon_dir(), icon->img_obj.data);
+			elm_image_file_set(img_eo, buf, NULL);
+		} else {
+			retvm_if(icon->img_obj.data[0] == '\0', FAIL, "Invalid parameter!");
+			elm_image_file_set(img_eo, icon->img_obj.data, NULL);
+		}
+
+		if (icon->img_obj.width >= 0 && icon->img_obj.height >= 0) {
+			evas_object_size_hint_min_set(img_eo,
+				ELM_SCALE_SIZE(icon->img_obj.width),
+				ELM_SCALE_SIZE(icon->img_obj.height));
+		} else
+			evas_object_size_hint_min_set(img_eo, ELM_SCALE_SIZE(DEFAULT_ICON_WIDTH), ELM_SCALE_SIZE(DEFAULT_ICON_HEIGHT));
+	}
+
+	if (icon->area == INDICATOR_ICON_AREA_SYSTEM && ad->opacity_mode == INDICATOR_OPACITY_TRANSPARENT)
+			util_send_status_message_start(ad, 2.5);
+
+	return OK;
+}
+
+
+void icon_noti_priority_set(icon_s *icon)
+{
+	icon->priority = time(NULL) * (-1);
+}
+
+
+void icon_show(icon_s *icon)
+{
+	struct appdata *ad = NULL;
+
+	ret_if(!icon);
+	ret_if(!(icon->ad));
+
+	icon->wish_to_show = EINA_TRUE;
+
+	ad = (struct appdata *)icon->ad;
+
+	if (icon->area == INDICATOR_ICON_AREA_NOTI) {
+		icon_noti_priority_set(icon);
+		list_update(icon);
+	}
+
+	if (icon->obj_exist == EINA_TRUE) {
+		if (icon->priority == INDICATOR_ICON_AREA_NOTI) {
+			box_remove_icon_from_list(icon);
+			box_add_icon_to_list(icon);
+			box_update_display(&(ad->win));
+			return;
+		} else
+			_icon_update(icon);
+
+	}
+	box_add_icon_to_list(icon);
+	box_update_display(&(ad->win));
+}
+
+
+void icon_hide(icon_s *icon)
+{
+	retm_if(!icon, "Invalid parameter!");
+	struct appdata *ad = (struct appdata *)icon->ad;
+
+	icon->wish_to_show = EINA_FALSE;
+
+	if (icon->exist_in_view == EINA_TRUE)
+		box_remove_icon_from_list(icon);
+
+	box_update_display(&(ad->win));
+}
+
+
+#if 0
+void icon_event_count_set(int count, void *data)
+{
+	static int _cnt = -1;
+	char buf[1024];
+
+	retm_if(data == NULL, "Cannot get layout!");
+
+	if (_cnt != count) {
+		memset(buf, 0x00, sizeof(buf));
+		if (count) {
+			snprintf(buf, sizeof(buf), "%d", count);
+			util_signal_emit(data, "badge,show,1", "elm.image.badge");
+		} else {
+			util_signal_emit(data, "badge,hide,1", "elm.image.badge");
+		}
+
+		util_part_text_emit(data, "elm.text.badge", buf);
+		_cnt = count;
+	}
+}
+#endif
+
+
+unsigned int icon_get_update_flag(void)
+{
+	return update_icon_flag;
+}
+
+
+void icon_set_update_flag(unsigned int val)
+{
+	_D("SET UPDATE FLAG %d", val);
+	update_icon_flag = val;
+}
+
+
+static Eina_Bool remove_icon_with_area(int area)
+{
+	icon_s *wish_remove_icon = NULL;
+	wish_remove_icon = list_try_to_find_icon_to_remove(area, 0);
+
+	retv_if(!wish_remove_icon, EINA_FALSE);
+
+	box_remove_icon_from_list(wish_remove_icon);
+
+	return EINA_TRUE;
+}
+
+
+static Eina_Bool add_icon_with_area(int area)
+{
+	icon_s *wish_add_icon = NULL;
+	wish_add_icon = list_try_to_find_icon_to_show(area, 0);
+
+	retv_if(!wish_add_icon, EINA_FALSE);
+
+	retv_if(box_exist_icon(wish_add_icon), EINA_FALSE);
+
+	box_add_icon_to_list(wish_add_icon);
+
+	return EINA_TRUE;
+}
+
+
+static Eina_Bool check_for_icons_overflow(void)
+{
+	int sys_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_SYSTEM);
+	int minictrl_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_MINICTRL);
+	int noti_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_NOTI);
+
+	if ((sys_cnt + minictrl_cnt + noti_cnt) <= PORT_NONFIXED_ICON_COUNT)
+		return EINA_FALSE;
+
+	return EINA_TRUE;
+}
+
+
+void check_to_show_more_noti(win_info *win)
+{
+	static Eina_Bool previous_overflow_state;
+	Eina_Bool overflow;
+
+	overflow = check_for_icons_overflow();
+
+	if (previous_overflow_state == overflow)
+		return;
+
+	previous_overflow_state = overflow;
+
+	if (overflow)
+		indicator_more_notify_icon_change(EINA_TRUE);
+	else
+		indicator_more_notify_icon_change(EINA_FALSE);
+}
+
+
+static void get_icons_cnt_per_area(int *s, int *m, int *n)
+{
+	int system_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_SYSTEM);
+	int minictrl_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_MINICTRL);
+	int noti_cnt = list_get_wish_to_show_icons_cnt(INDICATOR_ICON_AREA_NOTI);
+
+	int system = 0;
+	int minictrl = 0;
+	int noti = 0;
+	int total = 0;
+
+	int max_icon_cnt = PORT_NONFIXED_ICON_COUNT;
+
+	if ((system_cnt + minictrl_cnt + noti_cnt) > PORT_NONFIXED_ICON_COUNT)
+		max_icon_cnt--;
+
+	if (system_cnt > 0) {
+		system_cnt--;
+		system++;
+		total++;
+	}
+	if (minictrl_cnt > 0) {
+		minictrl_cnt--;
+		minictrl++;
+		total++;
+	}
+	if (noti_cnt > 0) {
+		noti_cnt--;
+		noti++;
+		total++;
+	}
+
+	while (total < max_icon_cnt) {
+
+		if (system_cnt > 0) {
+			system_cnt--;
+			total++;
+			system++;
+		} else if (minictrl_cnt > 0) {
+			minictrl_cnt--;
+			total++;
+			minictrl++;
+		} else if (noti_cnt > 0) {
+			noti_cnt--;
+			total++;
+			noti++;
+		} else
+			break;
+	}
+
+	*s = system;
+	*m = minictrl;
+	*n = noti;
+}
+
+
+void icon_reset_list(void)
+{
+	int system, minictrl, noti;
+	get_icons_cnt_per_area(&system, &minictrl, &noti);
+
+	while (box_get_list_size(INDICATOR_ICON_AREA_SYSTEM) > system) {
+
+		if (!remove_icon_with_area(INDICATOR_ICON_AREA_SYSTEM))
+			break;
+	}
+	while (box_get_list_size(INDICATOR_ICON_AREA_SYSTEM) < system) {
+
+		if (!add_icon_with_area(INDICATOR_ICON_AREA_SYSTEM))
+			break;
+	}
+
+	while (box_get_list_size(INDICATOR_ICON_AREA_MINICTRL) > minictrl) {
+
+		if (!remove_icon_with_area(INDICATOR_ICON_AREA_MINICTRL))
+			break;
+	}
+	while (box_get_list_size(INDICATOR_ICON_AREA_MINICTRL) < minictrl) {
+
+		if (!add_icon_with_area(INDICATOR_ICON_AREA_MINICTRL))
+			break;
+	}
+
+	while (box_get_list_size(INDICATOR_ICON_AREA_NOTI) > noti) {
+
+		if (!remove_icon_with_area(INDICATOR_ICON_AREA_NOTI))
+			break;
+	}
+	while (box_get_list_size(INDICATOR_ICON_AREA_NOTI) < noti) {
+
+		if (!add_icon_with_area(INDICATOR_ICON_AREA_NOTI))
+			break;
+	}
+}
+
+/* End of file */

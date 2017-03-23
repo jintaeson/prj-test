@@ -1,0 +1,93 @@
+/*
+ * Copyright 2016  Samsung Electronics Co., Ltd
+ *
+ * Licensed under the Flora License, Version 1.1 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://floralicense.org/license/
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+color_classes {
+	color_class {
+		name: "AO001";
+		color: 30 30 30 255;
+	}
+	color_class {
+		name: "AO002";
+		color: 20 107 147 255;
+	}
+	color_class {
+		name: "AO003";
+		color: 255 255 255 255;
+	}
+	color_class {
+		name: "AO004";
+		color: 255 255 255 255;
+	}
+	color_class {
+		name: "AO004D";
+		color: 255 255 255 127;
+	}
+	color_class {
+		name: "AO005";
+		color: 11 173 0 255;
+	}
+	color_class {
+		name: "AO006";
+		color: 204 0 0 255;
+	}
+	color_class {
+		name: "AO007";
+		color: 63 63 63 255;
+	}
+	color_class {
+		name: "AO008";
+		# default indicator background color dimmed by 10%
+		# color: 61 184 204 255;
+		color: 55 166 184 255;
+	}
+	color_class {
+		name: "ATO001";
+		color: 255 255 255 255;
+	}
+	color_class {
+		name: "ATO002";
+		color: 255 255 255 255;
+	}
+	color_class {
+		name: "ATO003";
+		color: 255 255 255 255;
+	}
+	color_class {
+		name: "ATO004";
+		color: 0 0 0 255;
+	}
+	color_class {
+		name: "ATO005";
+		color: 76 76 76 255;
+	}
+	color_class {
+		name: "W015L1";
+		color: 88 175 57 255;
+	}
+	color_class {
+		name: "F060L3";
+		color: 214 49 49 255;
+	}
+	color_class
+	{
+		name: "bg_custom";
+		color: 0 0 0 255;
+	}
+	color_class
+	{
+		name: "bg_default";
+		color: 0 0 0 0;
+	}
+}
