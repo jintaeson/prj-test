@@ -1,4 +1,4 @@
-lnguage: java
+language: java
 
 sudo: required
 
@@ -20,7 +20,5 @@ cache:
   directories:
     - $HOME/GBS-ROOT/local/cache
 
-branches:
-  only:
-    - tester
+
 
